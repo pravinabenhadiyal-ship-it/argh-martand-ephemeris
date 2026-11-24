@@ -1,0 +1,46 @@
+name: Daily NSE Swiss Ephemeris
+
+on:
+  schedule:
+    # 14:30 UTC = 20:00 IST (Sunday through Thursday evenings for Mon-Fri sessions)
+    - cron: '30 14 * * 0-4'
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: 'Optional NSE date (YYYY-MM-DD). Leave blank for next trading day.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-ephemeris:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate Sidereal Lahiri Ephemeris
+        run: |
+          if [ -n "${{ github.event.inputs.target_date }}" ]; then
+            python generate_ephemeris.py "${{ github.event.inputs.target_date }}"
+          else
+            python generate_ephemeris.py
+          fi
+
+      - name: Commit updated ephemeris
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add daily_ephemeris.md
+          git diff --staged --quiet || git commit -m "Update NSE Swiss Ephemeris $(date -u +'%Y-%m-%d')"
+          git push
