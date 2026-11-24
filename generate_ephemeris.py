@@ -34,24 +34,26 @@ PLANETS = [
     ("Venus", swe.VENUS),
     ("Saturn", swe.SATURN),
     ("Rahu", swe.TRUE_NODE),
+    ("Uranus", swe.URANUS),
+    ("Neptune", swe.NEPTUNE),
+    ("Pluto", swe.PLUTO),
 ]
 
+# Exact orb limits matching premarket-astro-report-v3
 ASPECTS = [
-    ("Conj", 0, 3.0),
-    ("Semi-sext", 30, 1.5),
-    ("Semi-sq", 45, 1.5),
-    ("Sextile", 60, 2.5),
-    ("Square", 90, 3.0),
-    ("Trine", 120, 3.0),
-    ("Quincunx", 150, 1.5),
-    ("Opp", 180, 3.0),
+    ("Conj", 0, 8.0),
+    ("Semi-sext", 30, 3.0),
+    ("Semi-sq", 45, 3.0),
+    ("Sextile", 60, 5.0),
+    ("Square", 90, 5.0),
+    ("Trine", 120, 5.0),
+    ("Quincunx", 150, 3.0),
+    ("Opp", 180, 8.0),
 ]
 
-INSTRUMENT_PLANETS = {
-    "NIFTY": {"Sun", "Moon", "Mercury", "Jupiter", "Saturn", "Rahu", "Ketu"},
-    "HAL": {"Sun", "Mars", "Saturn", "Rahu", "Ketu", "Mercury"},
-    "CRUDEOIL": {"Mars", "Saturn", "Rahu", "Ketu", "Moon", "Venus"},
-}
+# Either-Planet rule matching premarket-astro-report-v3
+HAL_PLANETS = {"Sun", "Saturn", "Mars", "Rahu", "Uranus"}
+CRUDEOIL_PLANETS = {"Saturn", "Moon", "Mars", "Rahu"}
 
 
 def to_jd(dt_ist: datetime) -> float:
@@ -97,13 +99,15 @@ def analyze_session(session_start: datetime) -> str:
     jd_open_next = jd_open + (1.0 / 1440.0)
     pos_open = get_positions(jd_open)
     pos_next = get_positions(jd_open_next)
-    planet_names = list(pos_open.keys())
+    planet_names = [
+        "Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus",
+        "Saturn", "Rahu", "Ketu", "Uranus", "Neptune", "Pluto"
+    ]
 
-    # Track minute-by-minute ingresses and exact aspect peaks (09:15 to 15:30 IST)
     ingresses = []
-    min_orb_tracker = {}  # (p1, p2, asp_name) -> (min_orb, timestamp_str)
+    min_orb_tracker = {}
 
-    # Pre-filter candidate pairs within 5 degrees at open to keep 1-year run fast
+    # Pre-filter pairs within max_orb + 4.5 deg at open so fast Moon exact hits are never missed
     candidate_pairs = []
     for i in range(len(planet_names)):
         for j in range(i + 1, len(planet_names)):
@@ -113,12 +117,13 @@ def analyze_session(session_start: datetime) -> str:
             d0 = ang_diff(pos_open[p1][0], pos_open[p2][0])
             for asp_name, angle, max_orb in ASPECTS:
                 orb0 = abs(d0 - angle)
-                if orb0 <= max(max_orb, 4.5):
+                if orb0 <= max_orb + 4.5:
                     candidate_pairs.append((p1, p2, asp_name, angle, max_orb))
                     min_orb_tracker[(p1, p2, asp_name)] = (orb0, "09:15 IST")
 
     prev_det = {p: zodiac_details(pos_open[p][0]) for p in planet_names}
 
+    # Minute-by-minute scan (09:15 to 15:30 IST = 375 mins)
     for minute in range(1, 376):
         t = session_start + timedelta(minutes=minute)
         jd_t = to_jd(t)
@@ -180,20 +185,25 @@ def analyze_session(session_start: datetime) -> str:
     date_str = session_start.strftime("%Y-%m-%d (%a)")
     lines = [f"## {date_str}"]
 
-    # 1. Instrument Aspect Summary (Applying & Exact only)
-    inst_lines = []
-    for inst, drivers in INSTRUMENT_PLANETS.items():
-        matches = [
+    def fmt_asp(a):
+        return (
             f"{a['pair']} {a['aspect']} ({a['orb']:.2f}°, {a['phase']}"
             + (f" @{a['peak']})" if a["peak"] != "—" else ")")
-            for a in active_aspects
-            if a["phase"] in ("APPLYING", "EXACT")
-            and (a["p1"] in drivers and a["p2"] in drivers)
-        ]
-        inst_lines.append(f"**{inst}:** " + ("; ".join(matches) if matches else "None"))
-    lines.append("- **Instrument Summary (Applying/Exact):** " + " | ".join(inst_lines))
+        )
 
-    # 2. Planetary Positions (09:15 IST)
+    qualifying = [a for a in active_aspects if a["phase"] in ("APPLYING", "EXACT")]
+    nifty_list = [fmt_asp(a) for a in qualifying]
+    hal_list = [fmt_asp(a) for a in qualifying if (a["p1"] in HAL_PLANETS or a["p2"] in HAL_PLANETS)]
+    crude_list = [fmt_asp(a) for a in qualifying if (a["p1"] in CRUDEOIL_PLANETS or a["p2"] in CRUDEOIL_PLANETS)]
+
+    lines.append(
+        "- **Instrument Summary (Applying/Exact Only):** "
+        + f"**NIFTY ({len(nifty_list)}):** " + ("; ".join(nifty_list) if nifty_list else "None")
+        + f" | **HAL ({len(hal_list)}):** " + ("; ".join(hal_list) if hal_list else "None")
+        + f" | **CRUDEOIL ({len(crude_list)}):** " + ("; ".join(crude_list) if crude_list else "None")
+    )
+
+    # Planetary Positions (09:15 IST)
     lines.append("| Planet | Lon | D1 | D9 | Nakshatra | Speed |")
     lines.append("|---|---:|---|---|---|---:|")
     for p in planet_names:
@@ -204,16 +214,10 @@ def analyze_session(session_start: datetime) -> str:
             f"| {p} | {lon:.2f}° | {d['rashi']} {d['deg']:.2f}° | {d['d9']} | {d['nak']} P{d['pada']} | {spd:+.3f}°{r_tag} |"
         )
 
-    # 3. Intraday Ingresses
     lines.append("- **Intraday Ingresses (09:15–15:30 IST):** " + ("; ".join(ingresses) if ingresses else "None"))
 
-    # 4. All Active Aspects
-    all_asp = [
-        f"{a['pair']} {a['aspect']} ({a['orb']:.2f}°, {a['phase']}"
-        + (f" @{a['peak']})" if a["peak"] != "—" else ")")
-        for a in active_aspects
-    ]
-    lines.append("- **All Aspects:** " + ("; ".join(all_asp) if all_asp else "None"))
+    sep_list = [fmt_asp(a) for a in active_aspects if a["phase"] == "SEPARATING"]
+    lines.append("- **Separating Aspects (Decreasing Effect):** " + ("; ".join(sep_list) if sep_list else "None"))
     lines.append("")
     return "\n".join(lines)
 
@@ -228,8 +232,10 @@ def main():
     header = [
         f"# Swiss Ephemeris NSE 1-Year Master Calendar ({start_d} to {end_d})",
         "",
-        "- **Basis:** Swiss Ephemeris | Sidereal Lahiri (Chitrapaksha) | True Nodes (Rahu/Ketu)",
+        "- **Basis:** Swiss Ephemeris | Sidereal Lahiri (Chitrapaksha) | True Nodes (Rahu/Ketu) | 12 Planets (Uranus = Herschel)",
         "- **Location & Window:** NSE Mumbai (19.0760° N, 72.8777° E) | 09:15–15:30 IST (Mon–Fri)",
+        "- **Orb Limits (v3):** Conj/Opp ±8° | Square/Trine/Sextile ±5° | Semi-sextile/Semi-square/Quincunx ±3°",
+        "- **Instrument Mapping (Either-Planet Rule):** NIFTY = All | HAL = Sun, Saturn, Mars, Rahu, Uranus | CRUDEOIL = Saturn, Moon, Mars, Rahu",
         "- **Aspect Phase Rule:** APPLYING = Increasing effect | EXACT = Peak effect | SEPARATING = Decreasing effect",
         f"- **Generated At:** {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}",
         "",
@@ -239,7 +245,7 @@ def main():
     curr = start_d
     day_count = 0
     while curr <= end_d:
-        if curr.weekday() < 5:  # Mon-Fri
+        if curr.weekday() < 5:
             session_start = IST.localize(datetime(curr.year, curr.month, curr.day, 9, 15))
             blocks.append(analyze_session(session_start))
             day_count += 1
